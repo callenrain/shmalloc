@@ -1,6 +1,7 @@
 #include "appsupport.h"
 #include "shmalloc.h"
-//#define SHMALLOC_DEBUG
+#define SHMALLOC_DEBUG
+
 
 //####################################################################
 // Functions from memutils.c
