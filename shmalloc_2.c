@@ -101,7 +101,7 @@ void * shmalloc (int size) {
 
 	if((prevp = freep) == NULL) {
 		base->s.next = freep = prevp = base;
-		base->s.size = 0;
+		base->s.size = AVAILABLE_SHMALLOC_SIZE;
 	}
 
 	for(p=prevp->s.next;; prevp = p, p = p->s.next) {

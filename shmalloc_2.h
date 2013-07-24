@@ -341,6 +341,8 @@ Header * freep;
 #define NUM_FREE_LISTS (4)
 #endif
 
+#define AVAILABLE_SHMALLOC_SIZE CL_LOCAL_SHARED_OFFSET - (shmem_next - 0x08000000)
+
 //int free_l_sizes[NUM_FREE_LISTS]= {16,128,512};
 
 typedef struct {
