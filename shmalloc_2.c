@@ -94,32 +94,36 @@ void shmalloc_init(unsigned int address) {
 
 void * shmalloc (int size) {
 
-	pr("Called shmalloc with size: ", size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+	pr("\n\nCalled shmalloc with size: ", size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 
 	Header *p, *prevp;
-
-	unsigned nbytes = (size + sizeof(Header) - 1)/sizeof(Header) + 1;
+	pr("Size of Header: ", sizeof(Header), PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+	unsigned num_headers = (size + sizeof(Header) - 1)/sizeof(Header) + 1;
+	pr("num_headers is: ", num_headers, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 
 	if((prevp = freep) == NULL) {
 		base->s.next = freep = prevp = base;
-		base->s.size = AVAILABLE_SHMALLOC_SIZE;
-		pr("Initalized initial pointers: ", AVAILABLE_SHMALLOC_SIZE, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+		base->s.size = (AVAILABLE_SHMALLOC_SIZE)/sizeof(Header);
+		pr("Initalized number of Headers: ", base->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 	}
 
 	for(p=prevp->s.next;; prevp = p, p = p->s.next) {
 		pr("In for loop", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
-		if(p->s.size >= nbytes) {
-			if (p->s.size == nbytes) {
+		if(p->s.size >= num_headers) {
+			if (p->s.size == num_headers) {
 				prevp->s.next = p->s.next;
 				pr("Found exactly the right size", 0x0, PR_CPU_ID | PR_STRING | PR_NEWL);
 			} else {
-				p->s.size -= nbytes;
-				pr("p: ", p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
-				p = (Header *)((int)p + p->s.size);
-				pr("p: ", p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
-				p->s.size = nbytes;
-				pr("Split free memory", 0x0, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
-				pr("New chunk: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+				pr("Split free memory", 0x0, PR_CPU_ID | PR_STRING | PR_NEWL);
+				pr("Original large chunk: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+				p->s.size -= num_headers;
+				pr("Smaller Chunk: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+				pr("Reduced by: ", num_headers, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+				pr("p before shift: ", (int)p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+				p = p + p->s.size;
+				pr("p after shift: ", (int)p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+				p->s.size = num_headers;
+				pr("New chunk size: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 			}
 			freep = prevp;
 			return (void *) (p+1); // return beginning of user's data
@@ -133,34 +137,48 @@ void * shmalloc (int size) {
 
 }
 
-void free(void *ap) {
+void shfree(void *ap) {
 	Header *bp, *p;
+	pr("\n\nIn shfree", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
 
 	bp = (Header *)ap - 1; // bp points to the header of this block
+	pr("Size of freeing chunk: ", bp->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
 	for (p = freep; (bp <= p || bp >= p-> s.next); p = p->s.next) {
 		if (p >= p->s.next && (bp > p || bp < p-> s.next)) {
+			pr("Using corner case to break", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
 			break; // break out of for loop if we are at the beginning or end
 		}
 	}
 
-	if (bp + bp->s.size == p->s.next) {
+	pr("p size before attachment: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+	if (bp + bp->s.size == p->s.next) { // bp goes right before p_next
+		pr("free chunk is before p's next", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
+		pr("bp original size: ", bp->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 		bp->s.size += p->s.next->s.size;
+		pr("bp full size: ", bp->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 		bp->s.next = p->s.next->s.next;
-	} else {
+	} else { // attach bp's next pointer to p's former next pointer
 		bp->s.next = p->s.next;
 	}
 
-	if (p + p->s.size == bp) {
+	if (p + p->s.size == bp) { // bp goes right after p
+		pr("free chunk is directly after p", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
+		pr("p original size: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 		p->s.size += bp->s.size;
+		pr("p full size: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 		p->s.next = bp->s.next;
-	} else {
+	} else { // attach p's next pointer to bp
 		p->s.next = bp;
 	}
+
+	pr("p_next size after attachment: ", p->s.next->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+	pr("p size after attachment: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
 	freep = p;
 }
-
-
-
 
 
 
@@ -179,8 +197,8 @@ void gomp_hal_init_locks(int offset) {
 		next_lock = (volatile int *) shmalloc(heap_handler, sizeof(int));
 #else
 		next_lock = (volatile int *) shmalloc(sizeof(int));
-		ASSERT(next_lock);
-		pr("Called GHIL shmalloc", 0, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+		ASSERT((int)next_lock);
+		pr("Called GHIL shmalloc", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
 #endif
 		locks_inited = 1;
 	}
