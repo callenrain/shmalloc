@@ -110,7 +110,8 @@ void * shmalloc (int size) {
 	for(p=prevp->s.next;; prevp = p, p = p->s.next) {
 		pr("In for loop", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
 		if(p->s.size >= num_headers) {
-			if (p->s.size == num_headers) {
+			pr("Address of p: ", (int)p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+			if (p->s.size <= num_headers + 1) {
 				prevp->s.next = p->s.next;
 				pr("Found exactly the right size", 0x0, PR_CPU_ID | PR_STRING | PR_NEWL);
 			} else {
