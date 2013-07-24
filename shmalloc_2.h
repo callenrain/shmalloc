@@ -349,9 +349,9 @@ typedef struct {
     Header * first;// pointer to the first block in mem
     //Header * free_lists[NUM_FREE_LISTS];
 
-} global;
+} shmalloc_info;
 
-global global_data;
+shmalloc_info shmalloc_infos;
 
 unsigned global_data_base;
 

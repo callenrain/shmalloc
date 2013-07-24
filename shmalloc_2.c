@@ -49,24 +49,6 @@ void omp_initenv(int nprocs, int pid)
 	//shmalloc_init(0xa000);
 	//pr("After initenv, shmem_next = ", shmem_next, PR_STRING | PR_NEWL | PR_HEX);
 
-	alloc_global_point = shmem_next;
-	shmem_next += sizeof(global_point_t);
-
-	Init_Flag = shmem_next;
-	shmem_next += sizeof(int);
-
-	//Allocate Space for 5 barriers. (ID: 0, 1, 2, 3, 4)
-	Barrier_Base = shmem_next;
-	shmem_next += 5*Barrier_Size;
-
-
-
-
-	global_data_base = shmem_next;
-	shmem_next += sizeof(global_data);
-	base = (Header *) shmem_next;
-
-	freep = NULL; 
 
 /*
 	for (i=0; i<NUM_FREE_LISTS; i++) {
@@ -89,11 +71,30 @@ inline void print_shmem_utilization() {
 void shmalloc_init(unsigned int address) {
     shmem_next = SHARED_BASE + address;
     SHMEM_LOCK = (unsigned int) LOCKS(SHMALLOC_LOCK_ID);
+
+    // allocation space for the global pointer
+	alloc_global_point = shmem_next;
+	shmem_next += sizeof(global_point_t);
+
+	// allocate space for initialization flag
+	Init_Flag = shmem_next;
+	shmem_next += sizeof(int);
+
+	//Allocate Space for 5 barriers. (ID: 0, 1, 2, 3, 4)
+	Barrier_Base = shmem_next;
+	shmem_next += 5*Barrier_Size;
+
+    global_data_base = shmem_next;
+	shmem_next += sizeof(shmalloc_info);
+	base = (Header *) shmem_next;
+	freep = NULL; 
     //pr ("After shmalloc_init, shmem_next is: ", shmem_next, PR_STRING|PR_NEWL|PR_HEX);
 }
 
 
 void * shmalloc (int size) {
+
+	pr("Called shmalloc with size: ", size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 
 	Header *p, *prevp;
 
@@ -102,16 +103,23 @@ void * shmalloc (int size) {
 	if((prevp = freep) == NULL) {
 		base->s.next = freep = prevp = base;
 		base->s.size = AVAILABLE_SHMALLOC_SIZE;
+		pr("Initalized initial pointers: ", AVAILABLE_SHMALLOC_SIZE, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 	}
 
 	for(p=prevp->s.next;; prevp = p, p = p->s.next) {
+		pr("In for loop", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
 		if(p->s.size >= nbytes) {
 			if (p->s.size == nbytes) {
 				prevp->s.next = p->s.next;
+				pr("Found exactly the right size", 0x0, PR_CPU_ID | PR_STRING | PR_NEWL);
 			} else {
-				p-> s.size -= nbytes;
-				p += p->s.size;
+				p->s.size -= nbytes;
+				pr("p: ", p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+				p = (Header *)((int)p + p->s.size);
+				pr("p: ", p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 				p->s.size = nbytes;
+				pr("Split free memory", 0x0, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+				pr("New chunk: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 			}
 			freep = prevp;
 			return (void *) (p+1); // return beginning of user's data
@@ -163,12 +171,16 @@ void free(void *ap) {
 //####################################################################
 // Functions from lock.c
 void gomp_hal_init_locks(int offset) {
+	pr("In GHIL", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
+
 	static int locks_inited = 0;
 	if (!locks_inited) {
 #ifdef HEAP_HANDLERS
 		next_lock = (volatile int *) shmalloc(heap_handler, sizeof(int));
 #else
 		next_lock = (volatile int *) shmalloc(sizeof(int));
+		ASSERT(next_lock);
+		pr("Called GHIL shmalloc", 0, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 #endif
 		locks_inited = 1;
 	}
