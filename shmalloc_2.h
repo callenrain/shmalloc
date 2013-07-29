@@ -1,3 +1,9 @@
+/* Shmalloc_2
+ * Adapted from OpemMP
+ * Second version, supports shfree() and counters.
+ *
+ * Peng Zhao & Callen Rain
+ */
 #ifndef __SHMALLOC_H__
 #define __SHMALLOC_H__
 
@@ -5,6 +11,20 @@
 #include "appsupport.h"
 #include "config.h"
 #include <stddef.h>
+
+
+// Callen & Peng : This is the switch used to turn on/off shmalloc debugging prints.
+//#define shmalloc_dbg 
+
+#ifdef shmalloc_dbg
+#define pr_shmalloc_str(_x) pr(_x, 0x0, PR_CPU_ID | PR_STRING | PR_NEWL);
+#define pr_shmalloc_hex(_x, _y) pr(_x, _y, PR_HEX | PR_CPU_ID | PR_STRING | PR_NEWL);
+#define pr_shmalloc_dec(_x, _y) pr(_x, _y, PR_DEC | PR_CPU_ID | PR_STRING | PR_NEWL);
+#else
+#define pr_shmalloc_str(_x) 
+#define pr_shmalloc_hex(_x, _y)
+#define pr_shmalloc_dec(_x, _y)
+#endif
 
 
 //###################################################################
@@ -179,6 +199,7 @@ void omp_initenv(int nprocs, int pid);
 inline void print_shmem_utilization();
 void shmalloc_init(unsigned int address);
 inline void * shmalloc (int size);
+inline void shfree(void *ap);
 
 //####################################################################
 // Functions from lock.c
@@ -318,6 +339,7 @@ void SEM_BARRIER(int ID ,int proc_id, int n_cpu);// ID = barrier ID,
 						// n_cpu = cores pending on the barrier
 void SEM_BARINIT(int ID, int n_cpu);
 
+//###########################################################################
 /********************* New Shmalloc and Free Functions *************/
 
 typedef long Align;
@@ -333,26 +355,44 @@ union header {
 
 typedef union header Header;
 
-static Header * base;
+Header * base;
 Header * freep;
 
-// how many free linked lists to have
-#ifndef NUM_FREE_LISTS
-#define NUM_FREE_LISTS (4)
-#endif
 
-#define AVAILABLE_SHMALLOC_SIZE CL_LOCAL_SHARED_OFFSET - (shmem_next - 0x08000000) - 0x00000100 // to be safe....
+// Callen & Peng 
+// Here we have to reduce the AVAILABLE_SHMALLOC_SIZE by a certain amount, to prevent stack overflow. 
+//
+// In VSoC, the stack size is only 0x1000 bytes (See CL_LOCAL_SHARED_SIZE in src/config.h and 
+// STACK_TOP in apps/support/simulator/vsoc.ld). This means if we allocate a lot of local variables,
+// the stack will not be large enough, and the stack pointer will fall into the heap (stack overflow). 
+// If this chunk of heap memory is used, the program will crash. So it would be best to leave this 
+// chunk unoccupied. 
+// 
+// The last 0x800 bytes is the safety zone - heap memory left unused.
+// Even if stack overflow occurs, if it falls into this 0x800 bytes, there will be no problem.
+// It's equivalent to a 0x1800 stack.
+// Could be enlarged if this is still not enough. The stack in MPARM is 0x20000 bytes (half of the entire memory).
+#define AVAILABLE_SHMALLOC_SIZE CL_LOCAL_SHARED_OFFSET - (shmem_next - 0x08000000) - 0x00000800 
 
-//int free_l_sizes[NUM_FREE_LISTS]= {16,128,512};
 
+
+/* There will be 5 counters: # of chunks of 1 header size
+ *                           # of chunks of 2-4 header size
+ *                           # of chunks of 5-10 header size
+ *                           # of chunks of 1-40 header size
+ *                           # of chunks of 41-Inf header size
+ */
+int counter_sizes[4]; // will be initialized to {2,5,11,41} in shmalloc_init.
+int numBins;          // will be initialized to 5 in shmalloc_init.
+int findBinNumber(int size);
+void printCounterInfo();
+
+// The counters. Count the available space left, and the number of chunks in different sizes. 
 typedef struct {
-    Header * first;// pointer to the first block in mem
-    //Header * free_lists[NUM_FREE_LISTS];
+	int Avail_Space;
+        int counters[5]; // One counter for each bin.
+} Counter_Struct;
 
-} shmalloc_info;
-
-shmalloc_info shmalloc_infos;
-
-unsigned global_data_base;
+Counter_Struct * Shmalloc_Counter; // Pointer to the shmalloc global counter.
 
 #endif // __SHMALLOC_H__

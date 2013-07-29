@@ -1,5 +1,12 @@
+/* Shmalloc_2
+ * Adapted from OpemMP
+ * Second version, supports shfree() and counters.
+ *
+ * Peng Zhao & Callen Rain
+ */
+
 #include "appsupport.h"
-#include "shmalloc.h"
+#include "shmalloc_2.h"
 #define SHMALLOC_DEBUG
 
 
@@ -84,50 +91,117 @@ void shmalloc_init(unsigned int address) {
 	Barrier_Base = shmem_next;
 	shmem_next += 5*Barrier_Size;
 
-    global_data_base = shmem_next;
-	shmem_next += sizeof(shmalloc_info);
+	// Allocate space for shmalloc counter.
+	counter_sizes[0] = 2;
+	counter_sizes[1] = 5;
+	counter_sizes[2] = 11;
+	counter_sizes[3] = 41;
+	numBins = 5;
+	Shmalloc_Counter = (Counter_Struct*) shmem_next;
+	shmem_next += sizeof(Counter_Struct);
+
+	// Global allocation is done. Mark current shmem_next address.
+	// This is the start of available shared memory
 	base = (Header *) shmem_next;
 	freep = NULL; 
-    //pr ("After shmalloc_init, shmem_next is: ", shmem_next, PR_STRING|PR_NEWL|PR_HEX);
+	//pr ("After shmalloc_init, shmem_next is: ", shmem_next, PR_STRING|PR_NEWL|PR_HEX);
 }
 
 
 void * shmalloc (int size) {
 
-	pr("\n\nCalled shmalloc with size: ", size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+	pr_shmalloc_hex("\n\nCalled shmalloc with size: ", size);
 
 	Header *p, *prevp;
-	pr("Size of Header: ", sizeof(Header), PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
-	unsigned num_headers = (size + sizeof(Header) - 1)/sizeof(Header) + 1;
-	pr("num_headers is: ", num_headers, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
 
+	pr_shmalloc_hex("Size of Header: ", sizeof(Header));
+
+	// express shmalloc size in terms of headers. 
+	// Take the ceilling if size is not multiple of Header size.
+	unsigned num_headers = (size + sizeof(Header) - 1)/sizeof(Header) + 1;
+
+	pr_shmalloc_hex("num_headers is: ", num_headers);
+
+
+#ifdef TCACHE
+	// Peng Zhao '15 - Add transaction here.
+#else
+	WAIT(0);
+#endif
 	if((prevp = freep) == NULL) {
+		pr_shmalloc_hex("First Shmalloc! base = ", base);
+		pr_shmalloc_hex("Available Shmalloc Size = ", AVAILABLE_SHMALLOC_SIZE);
 		base->s.next = freep = prevp = base;
 		base->s.size = (AVAILABLE_SHMALLOC_SIZE)/sizeof(Header);
-		pr("Initalized number of Headers: ", base->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+		pr_shmalloc_hex("Initalized number of Headers: ", base->s.size);
+
+		//Setup Shmalloc Counter
+		Shmalloc_Counter->Avail_Space = base->s.size;
+		int i;
+		for (i=0; i < numBins; i++){
+			Shmalloc_Counter->counters[i] = (int)(i == findBinNumber(base->s.size));
+		} // The counter of correct size gets the value 1 (true). Others get value 0 (false).
+		// The size almost always falls into the last (largest) bin, because it's the entire 
+                // heap memory as one chunk.
 	}
 
+
+	// Subtract size from avail_space in counter.
+	Shmalloc_Counter->Avail_Space -= num_headers;
+
 	for(p=prevp->s.next;; prevp = p, p = p->s.next) {
-		pr("In for loop", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
+
+		pr_shmalloc_str("In for loop");
+
 		if(p->s.size >= num_headers) {
-			pr("Address of p: ", (int)p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+			pr_shmalloc_hex("Found a large enough chunk. Address: ", (int)p);
+
+			// Peng & Callen
+			// Once we found a chunk that's larger enough, there are two possibilities:
+			//      1. The chunk is exactly the right size, or only 1 header size larger (not worth splitting).
+			//      2. The chunk is two or more header sizes larger (worth splitting).
+			// In both conditions, the original chunk will no longer exist. So we first subtract 1 from the 
+			// corresponding counter. In condition 2, we will add 1 to the counter that corresponds to the smaller
+			// chunk.
+			Shmalloc_Counter->counters[findBinNumber(p->s.size)] --;
+
 			if (p->s.size <= num_headers + 1) {
 				prevp->s.next = p->s.next;
-				pr("Found exactly the right size", 0x0, PR_CPU_ID | PR_STRING | PR_NEWL);
+				pr_shmalloc_str("Found exactly the right size");
+
 			} else {
-				pr("Split free memory", 0x0, PR_CPU_ID | PR_STRING | PR_NEWL);
-				pr("Original large chunk: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+				pr_shmalloc_str("Split free memory");
+				pr_shmalloc_hex("Original large chunk: ", p->s.size);
+
+				// The smaller free chunk splitted from the original chunk.
 				p->s.size -= num_headers;
-				pr("Smaller Chunk: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
-				pr("Reduced by: ", num_headers, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
-				pr("p before shift: ", (int)p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+				// Update counter.
+				Shmalloc_Counter->counters[findBinNumber(p->s.size)] ++;
+
+				pr_shmalloc_hex("Smaller Chunk: ", p->s.size);
+				pr_shmalloc_hex("Reduced by: ", num_headers);
+				pr_shmalloc_hex("p before shift: ", (int)p);
+
 				p = p + p->s.size;
-				pr("p after shift: ", (int)p, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+				pr_shmalloc_hex("p after shift: ", (int)p);
+
 				p->s.size = num_headers;
-				pr("New chunk size: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+				pr_shmalloc_hex("New chunk size: ", p->s.size);
 			}
 			freep = prevp;
+
+#ifdef TCACHE
+	// Peng Zhao '15 - Add transaction here.
+#else
+			SIGNAL(0);
+#endif
+
 			return (void *) (p+1); // return beginning of user's data
+			// pointer arithematic: pointer + 1 means increase pointer value by sizeof(type of pointer).
 		}
 
 		if (p == freep) { // we wrapped around
@@ -139,50 +213,144 @@ void * shmalloc (int size) {
 }
 
 void shfree(void *ap) {
+
+	if (freep == NULL){
+		pr("Called shfree before shmalloc! Exiting ...", 0x0, PR_STRING | PR_NEWL);
+		force_shutdown();
+	}
+	
 	Header *bp, *p;
-	pr("\n\nIn shfree", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
+
+	pr_shmalloc_str("\n\nIn shfree");
 
 	bp = (Header *)ap - 1; // bp points to the header of this block
-	pr("Size of freeing chunk: ", bp->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+#ifdef TCACHE
+	// Peng Zhao '15 - Add transaction here.
+#else
+	WAIT(0);
+#endif
+
+	// Add size to avail_space in counter.
+	Shmalloc_Counter->Avail_Space += bp->s.size;
+
+	pr_shmalloc_hex("Size of freeing chunk: ", bp->s.size);
 
 	for (p = freep; (bp <= p || bp >= p-> s.next); p = p->s.next) {
 		if (p >= p->s.next && (bp > p || bp < p-> s.next)) {
-			pr("Using corner case to break", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
+			pr_shmalloc_str("Using corner case to break");
 			break; // break out of for loop if we are at the beginning or end
 		}
 	}
 
-	pr("p size before attachment: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+	pr_shmalloc_hex("p size before coalesce: ", p->s.size);
+	// Assume bp has been freed. Increase Counter.
+	// Will be subtracted if bp needs to be coalesced.
+	Shmalloc_Counter->counters[findBinNumber(bp->s.size)] ++;
 
 	if (bp + bp->s.size == p->s.next) { // bp goes right before p_next
-		pr("free chunk is before p's next", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
-		pr("bp original size: ", bp->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+		pr_shmalloc_str("free chunk is before p's next");
+		pr_shmalloc_hex("bp original size: ", bp->s.size);
+		
+		// p's next and bp will be coalesced. Subtract them from counter.
+		Shmalloc_Counter->counters[findBinNumber(p->s.next->s.size)] --;
+		Shmalloc_Counter->counters[findBinNumber(bp->s.size)] --;
+		
 		bp->s.size += p->s.next->s.size;
-		pr("bp full size: ", bp->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+		
+		pr_shmalloc_hex("bp after-coalesce size: ", bp->s.size);
+
+		// bp now points to the new (larger) chunk. Add it to the counter.
+		Shmalloc_Counter->counters[findBinNumber(bp->s.size)] ++;
+
 		bp->s.next = p->s.next->s.next;
-	} else { // attach bp's next pointer to p's former next pointer
+	} else { 
+		// attach bp's next pointer to p's former next pointer
 		bp->s.next = p->s.next;
 	}
 
 	if (p + p->s.size == bp) { // bp goes right after p
-		pr("free chunk is directly after p", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
-		pr("p original size: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+		pr_shmalloc_str("free chunk is directly after p");
+		pr_shmalloc_hex("p original size: ", p->s.size);
+
+		// p and bp will be coalesced. Subtract them from counter.
+		Shmalloc_Counter->counters[findBinNumber(p->s.size)] --;
+		Shmalloc_Counter->counters[findBinNumber(bp->s.size)] --;
+
 		p->s.size += bp->s.size;
-		pr("p full size: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+
+		pr_shmalloc_hex("p after-coalesce size: ", p->s.size);
+
+		// p now points to the new (larger) chunk. Add it to the counter.
+		Shmalloc_Counter->counters[findBinNumber(p->s.size)] ++;
+
 		p->s.next = bp->s.next;
 	} else { // attach p's next pointer to bp
 		p->s.next = bp;
 	}
 
-	pr("p_next size after attachment: ", p->s.next->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+	pr_shmalloc_hex("p_next size after attachment: ", p->s.next->s.size);
 
-	pr("p size after attachment: ", p->s.size, PR_CPU_ID | PR_STRING | PR_HEX | PR_NEWL);
+	pr_shmalloc_hex("p size after attachment: ", p->s.size);
 
 	freep = p;
+
+#ifdef TCACHE
+	// Peng Zhao '15 - Add transaction here.
+#else
+	SIGNAL(0);
+#endif
+
 }
 
 
+// Find which bin a chunk belongs to.
+// Based on the given size, and the counter_sizes global variable.
+int findBinNumber(int size){
+	// Return the first bin if size is smaller than the first threshold.
+	if (size < counter_sizes[0]){
+		pr_shmalloc_str("size < counter_sizes[0]");
+		return 0;
+	}
+	// Return the last bin if size is greater than the last threshold.
+	if (size >= counter_sizes[numBins - 2]){
+		pr_shmalloc_str("size > counter_sizes[numBins-2]");
+		return (numBins - 1);
+	}
+	// Otherwise loop through all sizes.
+	int i;
+	for (i = 0; i < (numBins - 2); i++){
+		if (size >= counter_sizes[i] && size < counter_sizes[i + 1]){
+			pr_shmalloc_dec("i = ", i);
+			return (i+1);
+		}
+	}
+	pr("Shmalloc: findBinNumber() returning bogus value!!!!", 0x0, PR_STRING | PR_NEWL);
+	force_shutdown();
+}
 
+void printCounterInfo(){
+	pr("\n\n********************Counter Information********************", 0x0, PR_STRING | PR_NEWL);
+	pr("\n  chunks with \t smaller than", counter_sizes[0], PR_STRING | PR_DEC);
+	pr("header size: ", Shmalloc_Counter->counters[0], PR_STRING | PR_DEC | PR_NEWL);
+
+	int i;
+	for (i = 1; i < numBins; i++){
+		if (i == numBins - 1){       // last one
+			pr("\t\t larger than", counter_sizes[i-1] - 1, PR_STRING | PR_DEC);
+			pr("header size: ", Shmalloc_Counter->counters[i], PR_STRING | PR_DEC | PR_NEWL);
+		}
+		else{
+			pr("\t\t", counter_sizes[i-1], PR_STRING | PR_DEC);
+			pr("to", counter_sizes[i] - 1, PR_STRING | PR_DEC);
+			pr("header size: ", Shmalloc_Counter->counters[i], PR_STRING | PR_DEC | PR_NEWL);
+		}
+	}
+	pr("  Total available space (in header sizes):", Shmalloc_Counter->Avail_Space, PR_DEC | PR_STRING | PR_NEWL);
+	pr("\n********************Counter Information********************\n", 0x0, PR_STRING | PR_NEWL);
+}
 
 
 
@@ -190,7 +358,6 @@ void shfree(void *ap) {
 //####################################################################
 // Functions from lock.c
 void gomp_hal_init_locks(int offset) {
-	pr("In GHIL", 0, PR_CPU_ID | PR_STRING | PR_NEWL);
 
 	static int locks_inited = 0;
 	if (!locks_inited) {
@@ -416,10 +583,18 @@ void STD_BARRIER(int ID, int n_proc)
 	while (dummy(BARRIER[1]) != 0)
 	{
 	}
-  
+
+#ifdef TCACHE
+	// Peng Zhao '15 - Add transaction here.
+#else
 	WAIT(1);
+#endif
 	BARRIER[0] ++;
+#ifdef TCACHE
+	// Peng Zhao '15 - Add transaction here.
+#else
 	SIGNAL(1);
+#endif
 	  
 	#ifdef ULTRADEBUG
 	pr("BARRIER(): step 1 done", 0x0, PR_CPU_ID | PR_STRING | PR_TSTAMP | PR_NEWL);
@@ -435,15 +610,23 @@ void STD_BARRIER(int ID, int n_proc)
 	#ifdef ULTRADEBUG
 	pr("BARRIER(): all processes arrived", 0x0, PR_CPU_ID | PR_STRING | PR_TSTAMP | PR_NEWL);
 	#endif
-	
+
+#ifdef TCACHE
+	// Peng Zhao '15 - Add transaction here.
+#else
 	WAIT(1);
+#endif
 	BARRIER[1] ++;
 	if (BARRIER[1] == n_proc)
 	{
 		BARRIER[0] = 0;
 		BARRIER[1] = 0;
 	}
+#ifdef TCACHE
+	// Peng Zhao '15 - Add transaction here.
+#else
 	SIGNAL(1);
+#endif
 	
 	#ifdef ULTRADEBUG
 	pr("BARRIER() done!", 0x0, PR_CPU_ID | PR_STRING | PR_TSTAMP | PR_NEWL);
