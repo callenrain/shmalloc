@@ -16,7 +16,6 @@ void omp_initenv(int nprocs, int pid)
 { 
 	int i;
 	gomp_team_t * root_team;
-	
 	shmalloc_init(STATIC_TCDM_SIZE + sizeof(int));
 
 #ifdef HEAP_HANDLERS
@@ -97,22 +96,53 @@ void shmalloc_init(unsigned int address) {
 	counter_sizes[2] = 11;
 	counter_sizes[3] = 41;
 	numBins = 5;
-	Shmalloc_Counter = (Counter_Struct*) shmem_next;
-	shmem_next += sizeof(Counter_Struct);
 
-	// Global allocation is done. Mark current shmem_next address.
-	// This is the start of available shared memory
-	base = (Header *) shmem_next;
-	freep = NULL; 
-	//pr ("After shmalloc_init, shmem_next is: ", shmem_next, PR_STRING|PR_NEWL|PR_HEX);
+	int num_procs = get_proc_num(); // get number of processors from the system
+	pr("num procs: ", num_procs, PR_STRING | PR_HEX | PR_NEWL);
+	int proc_id = get_proc_id()-1; // get number of processors from the system, starts from 1 so decrement
+
+	// initialize core lists to null
+	global_lists = shmem_next;
+	shmem_next += sizeof(global_lists);
+	int i,j,proc_size,proc_headers,total_headers;
+
+	//proc_size = AVAILABLE_SHMALLOC_SIZE/num_procs; // divide memory
+	proc_size = AVAILABLE_SHMALLOC_SIZE/4;
+	total_headers = proc_size/sizeof(Header);
+	proc_headers = total_headers/4;
+
+	for(i=0;i<num_procs;i++) {
+		global_lists->base_list[i] = (proc_headers*sizeof(Header)*proc_id + shmem_next); // set size of each base
+		global_lists->base_list[i]->s.next = global_lists->base_list[i]; // wrap base's next pointer
+		global_lists->base_list[i]->s.size = proc_headers; // set size of each base
+		global_lists->freep_list[i] = global_lists->base_list[i]; // initialize freeps to bases
+		global_lists->counter_list[i]->Avail_Space = global_lists->base_list[i]->s.size; // initialize counters
+		for (j=0; j < numBins; j++){
+			global_lists->counter_list[i]->counters[j] = (int)(j == findBinNumber(global_lists->base_list[i]->s.size));
+			// The counter of correct size gets the value 1 (true). Others get value 0 (false).
+			// The size almost always falls into the last (largest) bin, because it's the entire 
+            // heap memory as one chunk.
+		}
+	}
+
+	for(i=0;i<num_procs;i++) {
+		pr_shmalloc_hex("First Shmalloc! base = ", global_lists->base_list[i]);
+		pr_shmalloc_hex("Available Shmalloc Size per core = ", proc_size);
+		pr_shmalloc_hex("Initalized number of Headers per core: ", global_lists->base_list[i]->s.size);
+	}
 }
 
 
 void * shmalloc (int size) {
-
+	int proc_id = get_proc_id()-1;
 	pr_shmalloc_hex("\n\nCalled shmalloc with size: ", size);
 
 	Header *p, *prevp;
+
+	freep = global_lists->freep_list[proc_id];
+	base = global_lists->base_list[proc_id];
+	prevp = freep;
+	Shmalloc_Counter = global_lists->counter_list[proc_id];
 
 	pr_shmalloc_hex("Size of Header: ", sizeof(Header));
 
@@ -122,29 +152,14 @@ void * shmalloc (int size) {
 
 	pr_shmalloc_hex("num_headers is: ", num_headers);
 
+	pr("past barriers", 0, PR_STRING | PR_NEWL);
+
 
 #ifdef TCACHE
 	// Peng Zhao '15 - Add transaction here.
 #else
 	WAIT(0);
 #endif
-	if((prevp = freep) == NULL) {
-		pr_shmalloc_hex("First Shmalloc! base = ", base);
-		pr_shmalloc_hex("Available Shmalloc Size = ", AVAILABLE_SHMALLOC_SIZE);
-		base->s.next = freep = prevp = base;
-		base->s.size = (AVAILABLE_SHMALLOC_SIZE)/sizeof(Header);
-		pr_shmalloc_hex("Initalized number of Headers: ", base->s.size);
-
-		//Setup Shmalloc Counter
-		Shmalloc_Counter->Avail_Space = base->s.size;
-		int i;
-		for (i=0; i < numBins; i++){
-			Shmalloc_Counter->counters[i] = (int)(i == findBinNumber(base->s.size));
-		} // The counter of correct size gets the value 1 (true). Others get value 0 (false).
-		// The size almost always falls into the last (largest) bin, because it's the entire 
-                // heap memory as one chunk.
-	}
-
 
 	// Subtract size from avail_space in counter.
 	Shmalloc_Counter->Avail_Space -= num_headers;

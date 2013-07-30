@@ -341,6 +341,9 @@ void SEM_BARINIT(int ID, int n_cpu);
 
 //###########################################################################
 /********************* New Shmalloc and Free Functions *************/
+#ifndef NUMCORES
+#define NUMCORES (16)
+#endif
 
 typedef long Align;
 
@@ -354,6 +357,20 @@ union header {
 };
 
 typedef union header Header;
+
+// The counters. Count the available space left, and the number of chunks in different sizes. 
+typedef struct {
+	int Avail_Space;
+    int counters[5]; // One counter for each bin.
+} Counter_Struct;
+
+typedef struct {
+	Header * freep_list[NUMCORES];
+	Header * base_list[NUMCORES];
+	Counter_Struct * counter_list[NUMCORES];
+} global;
+
+global * global_lists;
 
 Header * base;
 Header * freep;
@@ -372,7 +389,8 @@ Header * freep;
 // Even if stack overflow occurs, if it falls into this 0x800 bytes, there will be no problem.
 // It's equivalent to a 0x1800 stack.
 // Could be enlarged if this is still not enough. The stack in MPARM is 0x20000 bytes (half of the entire memory).
-#define AVAILABLE_SHMALLOC_SIZE CL_LOCAL_SHARED_OFFSET - (shmem_next - 0x08000000) - 0x00000800 
+#define TOTAL_STACK_SIZE STACK_SIZE * (get_proc_num())
+#define AVAILABLE_SHMALLOC_SIZE CL_LOCAL_SHARED_OFFSET - (shmem_next - 0x08000000) - TOTAL_STACK_SIZE
 
 
 
@@ -386,13 +404,6 @@ int counter_sizes[4]; // will be initialized to {2,5,11,41} in shmalloc_init.
 int numBins;          // will be initialized to 5 in shmalloc_init.
 int findBinNumber(int size);
 void printCounterInfo();
-
-// The counters. Count the available space left, and the number of chunks in different sizes. 
-typedef struct {
-	int Avail_Space;
-        int counters[5]; // One counter for each bin.
-} Counter_Struct;
-
-Counter_Struct * Shmalloc_Counter; // Pointer to the shmalloc global counter.
+Counter_Struct * Shmalloc_Counter;
 
 #endif // __SHMALLOC_H__
